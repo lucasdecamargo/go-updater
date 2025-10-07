@@ -1,7 +1,7 @@
-// +build !windows
+//go:build !windows
 
-package update
+package updater
 
-func hideFile(path string) error {
+func hideFile(_ string) error {
 	return nil
 }

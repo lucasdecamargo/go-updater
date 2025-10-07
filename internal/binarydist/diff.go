@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"encoding/binary"
 	"io"
-	"io/ioutil"
 )
 
 func swap(a []int, i, j int) { a[i], a[j] = a[j], a[i] }
@@ -164,29 +163,26 @@ func search(I []int, obuf, nbuf []byte, st, en int) (pos, n int) {
 
 		if x > y {
 			return I[st], x
-		} else {
-			return I[en], y
 		}
+		return I[en], y
 	}
 
 	x := st + (en-st)/2
 	if bytes.Compare(obuf[I[x]:], nbuf) < 0 {
 		return search(I, obuf, nbuf, x, en)
-	} else {
-		return search(I, obuf, nbuf, st, x)
 	}
-	panic("unreached")
+	return search(I, obuf, nbuf, st, x)
 }
 
 // Diff computes the difference between old and new, according to the bsdiff
 // algorithm, and writes the result to patch.
 func Diff(old, new io.Reader, patch io.Writer) error {
-	obuf, err := ioutil.ReadAll(old)
+	obuf, err := io.ReadAll(old)
 	if err != nil {
 		return err
 	}
 
-	nbuf, err := ioutil.ReadAll(new)
+	nbuf, err := io.ReadAll(new)
 	if err != nil {
 		return err
 	}
@@ -209,6 +205,7 @@ func diffBytes(obuf, nbuf []byte) ([]byte, error) {
 	return patch.buf, nil
 }
 
+//gocyclo:ignore
 func diff(obuf, nbuf []byte, patch io.WriteSeeker) error {
 	var lenf int
 	I := qsufsort(obuf)
