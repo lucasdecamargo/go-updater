@@ -19,25 +19,29 @@ var openFile = os.OpenFile
 //
 // Apply performs the following actions to ensure a safe cross-platform update:
 //
-// 1. If configured, applies the contents of the update io.Reader as a binary patch.
+//  1. If configured, applies the contents of the update io.Reader as a binary patch.
+//     Note: Patching requires the target file to exist.
 //
 // 2. If configured, computes the checksum of the new executable and verifies it matches.
 //
 // 3. If configured, verifies the signature with a public key.
 //
-// 4. Creates a new file, /path/to/.target.new with the TargetMode with the contents of the updated file
+// 4. Ensures the target directory exists, creating it if necessary.
 //
-// 5. Renames /path/to/target to /path/to/.target.old
+// 5. If the target file does not exist:
+//   - Creates the target file directly with the new content
+//   - Sets the appropriate file mode and permissions
 //
-// 6. Renames /path/to/.target.new to /path/to/target
+// 6. If the target file exists, performs the standard update procedure:
+//   - Creates a new file, /path/to/.target.new with the TargetMode with the contents of the updated file
+//   - Renames /path/to/target to /path/to/.target.old
+//   - Renames /path/to/.target.new to /path/to/target
+//   - If the final rename is successful, deletes /path/to/.target.old, returns no error. On Windows,
+//     the removal of /path/to/target.old always fails, so instead Apply hides the old file instead.
+//   - If the final rename fails, attempts to roll back by renaming /path/to/.target.old
+//     back to /path/to/target.
 //
-// 7. If the final rename is successful, deletes /path/to/.target.old, returns no error. On Windows,
-// the removal of /path/to/target.old always fails, so instead Apply hides the old file instead.
-//
-// 8. If the final rename fails, attempts to roll back by renaming /path/to/.target.old
-// back to /path/to/target.
-//
-// If the roll back operation fails, the file system is left in an inconsistent state (betweet steps 5 and 6) where
+// If the roll back operation fails, the file system is left in an inconsistent state where
 // there is no new executable file and the old executable file could not be be moved to its original location. In this
 // case you should notify the user of the bad news and ask them to recover manually. Applications can determine whether
 // the rollback failed by calling RollbackError, see the documentation on that function for additional detail.
@@ -78,8 +82,14 @@ func apply(update io.Reader, opts *Options) error {
 		return err
 	}
 
+	// check if target file exists
+	targetExists := targetExists(opts.TargetPath)
+
 	var newBytes []byte
 	if opts.Patcher != nil {
+		if !targetExists {
+			return errors.New("cannot apply patch to non-existent target file")
+		}
 		if newBytes, err = opts.applyPatch(update); err != nil {
 			return err
 		}
@@ -103,6 +113,13 @@ func apply(update io.Reader, opts *Options) error {
 		}
 	}
 
+	// handle file operations based on whether target exists
+	if !targetExists {
+		// target doesn't exist, create it directly
+		return createTarget(opts.TargetPath, newBytes, opts.TargetMode)
+	}
+
+	// target exists, perform the standard update procedure
 	// get the directory the executable exists in
 	updateDir := filepath.Dir(opts.TargetPath)
 	filename := filepath.Base(opts.TargetPath)
@@ -330,4 +347,39 @@ func checksumFor(h crypto.Hash, payload []byte) ([]byte, error) {
 	hash := h.New()
 	hash.Write(payload) // guaranteed not to error
 	return hash.Sum([]byte{}), nil
+}
+
+// targetExists checks if the target file exists
+func targetExists(path string) bool {
+	_, err := os.Stat(path)
+	return !os.IsNotExist(err)
+}
+
+// createTarget creates the target file with the given content and mode
+func createTarget(path string, content []byte, mode os.FileMode) error {
+	dir := filepath.Dir(path)
+	if _, err := os.Stat(dir); os.IsNotExist(err) {
+		if err := os.MkdirAll(dir, 0755); err != nil {
+			return fmt.Errorf("dir create %s: %w", dir, err)
+		}
+	}
+
+	fp, err := openFile(path, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, mode)
+	if err != nil {
+		return err
+	}
+	defer fp.Close()
+
+	_, err = io.Copy(fp, bytes.NewReader(content))
+	if err != nil {
+		return err
+	}
+
+	// ensure file has correct permissions
+	os.Chmod(path, mode)
+
+	// sync to ensure data is written to disk
+	fp.Sync()
+
+	return nil
 }
